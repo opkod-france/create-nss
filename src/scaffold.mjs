@@ -30,29 +30,51 @@ function replaceAll(content, search, replace) {
 }
 
 export async function scaffold(answers, options = {}) {
-  const projectDir = resolve(process.cwd(), answers.name);
+  const useCurrentDir = answers.useCurrentDir === true;
+  const projectDir = useCurrentDir
+    ? process.cwd()
+    : resolve(process.cwd(), answers.name);
 
   // ─── 1. Clone template ─────────────────────────
-  const cloneSpinner = ora("Cloning template...").start();
-  try {
-    await run(
-      `gh repo create ${answers.name} --template ${TEMPLATE_REPO} --clone --public`,
-      process.cwd()
-    );
-    cloneSpinner.succeed("Template cloned");
-  } catch {
-    cloneSpinner.text = "gh clone failed, trying git clone...";
+  if (useCurrentDir) {
+    const cloneSpinner = ora("Downloading template into current directory...").start();
+    try {
+      // Clone into a temp dir, then move contents into cwd
+      const tmpDir = join(projectDir, ".nss-tmp");
+      await run(
+        `git clone https://github.com/${TEMPLATE_REPO}.git .nss-tmp`,
+        projectDir
+      );
+      // Move all files (including hidden) from tmp into cwd
+      await run("rsync -a --exclude .git .nss-tmp/ ./", projectDir);
+      await run("rm -rf .nss-tmp", projectDir);
+      cloneSpinner.succeed("Template downloaded into current directory");
+    } catch (err) {
+      cloneSpinner.fail("Failed to download template");
+      throw err;
+    }
+  } else {
+    const cloneSpinner = ora("Cloning template...").start();
     try {
       await run(
-        `git clone https://github.com/${TEMPLATE_REPO}.git ${answers.name}`,
+        `gh repo create ${answers.name} --template ${TEMPLATE_REPO} --clone --public`,
         process.cwd()
       );
-      // Remove origin so it's a fresh project
-      await run("git remote remove origin", projectDir);
       cloneSpinner.succeed("Template cloned");
-    } catch (err) {
-      cloneSpinner.fail("Failed to clone template");
-      throw err;
+    } catch {
+      cloneSpinner.text = "gh clone failed, trying git clone...";
+      try {
+        await run(
+          `git clone https://github.com/${TEMPLATE_REPO}.git ${answers.name}`,
+          process.cwd()
+        );
+        // Remove origin so it's a fresh project
+        await run("git remote remove origin", projectDir);
+        cloneSpinner.succeed("Template cloned");
+      } catch (err) {
+        cloneSpinner.fail("Failed to clone template");
+        throw err;
+      }
     }
   }
 
@@ -236,7 +258,9 @@ export async function scaffold(answers, options = {}) {
   console.log();
   console.log(chalk.bold.green("  Done!"));
   console.log();
-  console.log(`  ${chalk.dim("cd")} ${answers.name}`);
+  if (!useCurrentDir) {
+    console.log(`  ${chalk.dim("cd")} ${answers.name}`);
+  }
   console.log(`  ${chalk.dim("docker compose up -d")}        ${chalk.dim("# start PostgreSQL + Traefik")}`);
   console.log(`  ${chalk.dim("yarn dev")}                    ${chalk.dim("# start dev servers")}`);
   console.log();

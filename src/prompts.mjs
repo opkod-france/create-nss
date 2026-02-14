@@ -1,4 +1,5 @@
 import { input, select, checkbox, confirm } from "@inquirer/prompts";
+import { basename, resolve } from "node:path";
 import chalk from "chalk";
 import validate from "validate-npm-package-name";
 import { uploadProviders, emailProviders, strapiPlugins } from "./catalog.mjs";
@@ -11,6 +12,13 @@ function section(title) {
 
 export async function collectAnswers(initialName) {
   const answers = {};
+
+  // When the user passes "." we scaffold into the current directory
+  // and derive the project name from the folder name.
+  if (initialName === ".") {
+    answers.useCurrentDir = true;
+    initialName = basename(resolve("."));
+  }
 
   // ─── 1. Project ──────────────────────────────
   section("1. Project");
