@@ -185,15 +185,26 @@ export async function scaffold(answers, options = {}) {
       extraPkgs.push(plugin.pkg);
     }
 
+    // Ensure corepack activates the correct package manager version
+    try {
+      await run("corepack enable", projectDir);
+      const pkg = JSON.parse(await readFile(rootPkg, "utf-8"));
+      if (pkg.packageManager) {
+        await run(`corepack prepare ${pkg.packageManager} --activate`, projectDir);
+      }
+    } catch {
+      // corepack may not be available; fall through to yarn install
+    }
+
     // Install root workspace
     try {
-      await run("yarn install --ignore-engines", projectDir);
+      await run("yarn install", projectDir);
       installSpinner.text = "Dependencies installed, adding extra packages...";
 
       // Add extra packages to api workspace
       if (extraPkgs.length) {
         await run(
-          `yarn add ${extraPkgs.join(" ")} --ignore-engines`,
+          `yarn add ${extraPkgs.join(" ")}`,
           join(projectDir, "apps/api")
         );
       }
