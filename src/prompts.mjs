@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import chalk from "chalk";
 import validate from "validate-npm-package-name";
 import { uploadProviders, emailProviders, strapiPlugins } from "./catalog.mjs";
+import { getNextAvailablePorts } from "./traefik.mjs";
 
 function section(title) {
   console.log();
@@ -39,24 +40,20 @@ export async function collectAnswers(initialName) {
   // ─── 2. Domains ──────────────────────────────
   section("2. Domains");
 
+  // Allocate ports from the shared registry
+  const ports = await getNextAvailablePorts();
+  answers.ports = ports;
+
+  console.log(chalk.dim(`  Ports: web=${ports.web}  api=${ports.api}  db=${ports.db}`));
+
   answers.localDomain = await input({
     message: "Frontend domain (local dev)",
-    default: `${answers.name}.dev`,
+    default: `${answers.name}.localhost`,
   });
 
   answers.localApiDomain = await input({
     message: "API domain (local dev)",
-    default: `api.${answers.name}.dev`,
-  });
-
-  answers.webDomain = await input({
-    message: "Frontend domain (production)",
-    default: `${answers.name}.com`,
-  });
-
-  answers.apiDomain = await input({
-    message: "API domain (production)",
-    default: `api.${answers.name}.com`,
+    default: `api.${answers.name}.localhost`,
   });
 
   // ─── 3. Database ─────────────────────────────
@@ -72,10 +69,7 @@ export async function collectAnswers(initialName) {
     default: "strapi",
   });
 
-  answers.dbPort = await input({
-    message: "Database port",
-    default: "5432",
-  });
+  answers.dbPort = String(ports.db);
 
   // ─── 4. Upload Provider ──────────────────────
   section("4. Upload Provider");
@@ -145,7 +139,7 @@ export async function collectAnswers(initialName) {
   console.log(chalk.dim("  " + "─".repeat(40)));
   console.log(`  Project:     ${chalk.green(answers.name)}`);
   console.log(`  Local:       https://${answers.localDomain} / https://${answers.localApiDomain}`);
-  console.log(`  Production:  https://${answers.webDomain} / https://${answers.apiDomain}`);
+  console.log(`  Ports:       web=${ports.web}  api=${ports.api}  db=${ports.db}`);
   console.log(`  Database:    ${answers.dbName} @ localhost:${answers.dbPort}`);
   console.log(`  Upload:      ${selectedUpload.name}`);
   console.log(`  Email:       ${selectedEmail.name}`);

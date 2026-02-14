@@ -10,7 +10,7 @@ program
   .description("Scaffold a Next.js 15 + Strapi v5 + PostgreSQL project")
   .argument("[project-name]", "Project name (kebab-case)")
   .option("--skip-install", "Skip dependency installation")
-  .option("--skip-certs", "Skip SSL certificate generation")
+  .option("--force", "Overwrite existing project directory")
   .action(async (projectName, options) => {
     console.log();
     console.log(chalk.bold("  create-nss"));

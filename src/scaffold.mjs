@@ -5,6 +5,12 @@ import { randomBytes } from "node:crypto";
 import chalk from "chalk";
 import ora from "ora";
 import { uploadProviders, emailProviders, strapiPlugins } from "./catalog.mjs";
+import {
+  checkDockerAvailable,
+  ensureSharedTraefik,
+  addProjectRouting,
+  registerProject,
+} from "./traefik.mjs";
 
 const TEMPLATE_REPO = "opkod-france/nextjs-strapi-starter";
 
@@ -34,6 +40,17 @@ export async function scaffold(answers, options = {}) {
   const projectDir = useCurrentDir
     ? process.cwd()
     : resolve(process.cwd(), answers.name);
+  const ports = answers.ports;
+
+  // ─── Preflight checks ──────────────────────────
+  await checkDockerAvailable();
+
+  if (!useCurrentDir && !options.force && (await exists(join(projectDir, "package.json")))) {
+    throw new Error(
+      `Project directory "${answers.name}" already contains a package.json. ` +
+        "Use --force to overwrite."
+    );
+  }
 
   // ─── 1. Clone template ─────────────────────────
   if (useCurrentDir) {
@@ -141,8 +158,10 @@ export async function scaffold(answers, options = {}) {
   // Domains
   envContent = replaceAll(envContent, "LOCAL_DOMAIN=app.localhost", `LOCAL_DOMAIN=${answers.localDomain}`);
   envContent = replaceAll(envContent, "LOCAL_API_DOMAIN=api.localhost", `LOCAL_API_DOMAIN=${answers.localApiDomain}`);
-  envContent = replaceAll(envContent, "WEB_DOMAIN=example.com", `WEB_DOMAIN=${answers.webDomain}`);
-  envContent = replaceAll(envContent, "API_DOMAIN=api.example.com", `API_DOMAIN=${answers.apiDomain}`);
+
+  // Ports
+  envContent = replaceAll(envContent, "WEB_PORT=3000", `WEB_PORT=${ports.web}`);
+  envContent = replaceAll(envContent, "API_PORT=1337", `API_PORT=${ports.api}`);
 
   envContent = replaceAll(
     envContent,
@@ -240,18 +259,23 @@ export async function scaffold(answers, options = {}) {
     console.log(chalk.dim("  Skipping dependency installation (--skip-install)"));
   }
 
-  // ─── 6. SSL certs ─────────────────────────────
-  if (!options.skipCerts) {
-    const certScript = join(projectDir, "scripts/generate-certs.sh");
-    if (await exists(certScript)) {
-      const certSpinner = ora("Generating local SSL certificates...").start();
-      try {
-        await run(`bash ${certScript}`, projectDir);
-        certSpinner.succeed("Local SSL certificates generated");
-      } catch {
-        certSpinner.warn("Could not generate SSL certs (install mkcert for best results)");
-      }
-    }
+  // ─── 6. Shared Traefik & routing ───────────────
+  const traefikSpinner = ora("Setting up shared Traefik...").start();
+  try {
+    await ensureSharedTraefik();
+    traefikSpinner.succeed("Shared Traefik running");
+  } catch (err) {
+    traefikSpinner.warn(`Shared Traefik setup failed: ${err.message}`);
+  }
+
+  const routingSpinner = ora("Registering project routing...").start();
+  try {
+    const domains = { web: answers.localDomain, api: answers.localApiDomain };
+    await addProjectRouting(answers.name, domains, ports);
+    await registerProject(answers.name, projectDir, ports, domains);
+    routingSpinner.succeed("Project routing registered");
+  } catch (err) {
+    routingSpinner.warn(`Routing registration failed: ${err.message}`);
   }
 
   // ─── Done ──────────────────────────────────────
@@ -261,7 +285,7 @@ export async function scaffold(answers, options = {}) {
   if (!useCurrentDir) {
     console.log(`  ${chalk.dim("cd")} ${answers.name}`);
   }
-  console.log(`  ${chalk.dim("docker compose up -d")}        ${chalk.dim("# start PostgreSQL + Traefik")}`);
+  console.log(`  ${chalk.dim("docker compose up -d")}        ${chalk.dim("# start PostgreSQL")}`);
   console.log(`  ${chalk.dim("yarn dev")}                    ${chalk.dim("# start dev servers")}`);
   console.log();
   console.log(`  Frontend:  ${chalk.cyan(`https://${answers.localDomain}`)}`);
