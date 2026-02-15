@@ -1,7 +1,8 @@
-import { execaCommand } from "execa";
+import { execaCommand, execa } from "execa";
 import { readFile, writeFile, mkdir, rm, access } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createServer } from "node:net";
 
 const NSS_DIR = join(homedir(), ".nss");
 const TRAEFIK_DIR = join(NSS_DIR, "traefik");
@@ -30,6 +31,26 @@ async function run(cmd, cwd) {
   return execaCommand(cmd, { cwd, stdio: "pipe" });
 }
 
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const srv = createServer();
+    srv.once("error", () => resolve(false));
+    srv.once("listening", () => {
+      srv.close(() => resolve(true));
+    });
+    srv.listen(port, "0.0.0.0");
+  });
+}
+
+async function findFreePort(preferred) {
+  if (await isPortFree(preferred)) return preferred;
+  // Scan upward from preferred
+  for (let p = preferred + 1; p < preferred + 100; p++) {
+    if (await isPortFree(p)) return p;
+  }
+  throw new Error(`No free port found near ${preferred}`);
+}
+
 // ─── Docker checks ───────────────────────────────
 
 export async function checkDockerAvailable() {
@@ -44,9 +65,9 @@ export async function checkDockerAvailable() {
 
 export async function isTraefikRunning() {
   try {
-    const { stdout } = await run(
-      `docker inspect -f "{{.State.Running}}" ${CONTAINER_NAME}`
-    );
+    const { stdout } = await execa("docker", [
+      "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME,
+    ], { stdio: "pipe" });
     return stdout.trim() === "true";
   } catch {
     return false;
@@ -64,7 +85,7 @@ export async function loadRegistry() {
     }
     return data;
   } catch {
-    return { projects: [] };
+    return { projects: [], traefik: {} };
   }
 }
 
@@ -119,19 +140,38 @@ export async function ensureSharedTraefik() {
     await generateWildcardCert();
   }
 
-  // 3. Write docker-compose.yml (always overwrite to keep up-to-date)
-  await writeFile(join(TRAEFIK_DIR, "docker-compose.yml"), traefikCompose());
+  // 3. If Traefik is already running with known ports, reuse them
+  const registry = await loadRegistry();
+  const running = await isTraefikRunning();
 
-  // 4. Write shared TLS config
+  if (running && registry.traefik?.ports) {
+    // Already up — just ensure TLS config is current
+    await writeFile(join(DYNAMIC_DIR, "_tls.yml"), tlsConfig());
+    return registry.traefik.ports;
+  }
+
+  // 4. Resolve Traefik ports by probing for free ones
+  const httpPort = await findFreePort(80);
+  const httpsPort = await findFreePort(443);
+  const dashPort = await findFreePort(8080);
+  const traefikPorts = { http: httpPort, https: httpsPort, dashboard: dashPort };
+  registry.traefik = { ports: traefikPorts };
+  await saveRegistry(registry);
+
+  // 5. Write docker-compose.yml and TLS config
+  await writeFile(
+    join(TRAEFIK_DIR, "docker-compose.yml"),
+    traefikCompose(traefikPorts)
+  );
   await writeFile(join(DYNAMIC_DIR, "_tls.yml"), tlsConfig());
 
-  // 5. Create Docker network if missing
+  // 6. Create Docker network if missing
   await ensureDockerNetwork();
 
-  // 6. Start Traefik if not running
-  if (!(await isTraefikRunning())) {
-    await run("docker compose up -d", TRAEFIK_DIR);
-  }
+  // 7. Start Traefik
+  await run("docker compose up -d", TRAEFIK_DIR);
+
+  return traefikPorts;
 }
 
 async function generateWildcardCert() {
@@ -140,23 +180,25 @@ async function generateWildcardCert() {
 
   // Try mkcert first
   try {
-    await run(
-      `mkcert -cert-file "${certPath}" -key-file "${keyPath}" "localhost" "*.localhost"`,
-      CERTS_DIR
-    );
+    await execa("mkcert", [
+      "-cert-file", certPath,
+      "-key-file", keyPath,
+      "localhost", "*.localhost",
+    ], { cwd: CERTS_DIR, stdio: "pipe" });
     return;
   } catch {
     // mkcert not available, fall back to openssl
   }
 
   // Fallback: openssl self-signed
-  await run(
-    `openssl req -x509 -newkey rsa:2048 -nodes ` +
-      `-keyout "${keyPath}" -out "${certPath}" -days 365 ` +
-      `-subj "/CN=localhost" ` +
-      `-addext "subjectAltName=DNS:localhost,DNS:*.localhost"`,
-    CERTS_DIR
-  );
+  await execa("openssl", [
+    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", keyPath,
+    "-out", certPath,
+    "-days", "365",
+    "-subj", "/CN=localhost",
+    "-addext", "subjectAltName=DNS:localhost,DNS:*.localhost",
+  ], { cwd: CERTS_DIR, stdio: "pipe" });
 }
 
 async function ensureDockerNetwork() {
@@ -183,7 +225,7 @@ export async function removeProjectRouting(name) {
 
 // ─── Config templates ────────────────────────────
 
-function traefikCompose() {
+function traefikCompose(ports) {
   return `name: nss-traefik
 
 services:
@@ -199,9 +241,9 @@ services:
       - "--providers.file.watch=true"
       - "--log.level=WARN"
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080"
+      - "${ports.http}:80"
+      - "${ports.https}:443"
+      - "${ports.dashboard}:8080"
     volumes:
       - ${DYNAMIC_DIR}:/etc/traefik/dynamic:ro
       - ${CERTS_DIR}:/etc/traefik/certs:ro

@@ -260,9 +260,10 @@ export async function scaffold(answers, options = {}) {
   }
 
   // ─── 6. Shared Traefik & routing ───────────────
+  let traefikPorts;
   const traefikSpinner = ora("Setting up shared Traefik...").start();
   try {
-    await ensureSharedTraefik();
+    traefikPorts = await ensureSharedTraefik();
     traefikSpinner.succeed("Shared Traefik running");
   } catch (err) {
     traefikSpinner.warn(`Shared Traefik setup failed: ${err.message}`);
@@ -279,6 +280,9 @@ export async function scaffold(answers, options = {}) {
   }
 
   // ─── Done ──────────────────────────────────────
+  const httpsPort = traefikPorts?.https || 443;
+  const portSuffix = httpsPort === 443 ? "" : `:${httpsPort}`;
+
   console.log();
   console.log(chalk.bold.green("  Done!"));
   console.log();
@@ -288,8 +292,8 @@ export async function scaffold(answers, options = {}) {
   console.log(`  ${chalk.dim("docker compose up -d")}        ${chalk.dim("# start PostgreSQL")}`);
   console.log(`  ${chalk.dim("yarn dev")}                    ${chalk.dim("# start dev servers")}`);
   console.log();
-  console.log(`  Frontend:  ${chalk.cyan(`https://${answers.localDomain}`)}`);
-  console.log(`  Strapi:    ${chalk.cyan(`https://${answers.localApiDomain}/admin`)}`);
+  console.log(`  Frontend:  ${chalk.cyan(`https://${answers.localDomain}${portSuffix}`)}`);
+  console.log(`  Strapi:    ${chalk.cyan(`https://${answers.localApiDomain}${portSuffix}/admin`)}`);
   console.log();
 }
 
